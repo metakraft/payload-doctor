@@ -1,0 +1,41 @@
+{
+  "name": "payload-doctor",
+  "version": "0.1.0",
+  "description": "Static security and correctness auditor for Payload CMS projects. Scans collections, access control, hooks, routes and config for known anti-patterns and outputs a 0-100 health score.",
+  "type": "commonjs",
+  "bin": {
+    "payload-doctor": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "selftest": "node dist/cli.js test/fixtures --verbose"
+  },
+  "keywords": [
+    "payload",
+    "payloadcms",
+    "security",
+    "linter",
+    "audit",
+    "static-analysis",
+    "access-control",
+    "nextjs"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ts-morph": "^24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
