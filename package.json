@@ -1,7 +1,7 @@
 {
   "name": "payload-doctor",
-  "version": "0.1.0",
-  "description": "Static security and correctness auditor for Payload CMS projects. Scans collections, access control, hooks, routes and config for known anti-patterns and outputs a 0-100 health score.",
+  "version": "0.5.4",
+  "description": "Static security & correctness linter for Payload CMS (the headless CMS) — audits collections, access control, hooks, routes and config. Not an API-payload validator.",
   "type": "commonjs",
   "bin": {
     "payload-doctor": "dist/cli.js"
@@ -9,13 +9,15 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "SKILL.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build",
-    "selftest": "node dist/cli.js test/fixtures --verbose"
+    "test": "npm run build && node test/run.mjs",
+    "selftest": "node dist/cli.js test/fixtures/vulnerable --verbose"
   },
   "keywords": [
     "payload",
@@ -25,9 +27,20 @@
     "audit",
     "static-analysis",
     "access-control",
-    "nextjs"
+    "nextjs",
+    "payload-cms",
+    "ts-morph"
   ],
   "license": "MIT",
+  "author": "Leander M. von Kraft (https://www.metakraft.de)",
+  "homepage": "https://github.com/metakraft/payload-doctor#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/metakraft/payload-doctor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/metakraft/payload-doctor/issues"
+  },
   "engines": {
     "node": ">=18"
   },

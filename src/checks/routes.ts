@@ -57,6 +57,15 @@ const sideEffectInGet: Check = {
   describe: 'GET handler performs a write (prefetch/scanner can trigger it)',
   run(file, ctx) {
     const findings: Finding[] = []
+    const path = file.getFilePath()
+    const isCron = /\/cron\//i.test(path)
+    const isUnsub = !isCron && /unsubscribe|opt-?out/i.test(path)
+    const sev = isCron ? 'info' : isUnsub ? 'warning' : 'error'
+    const note = isCron
+      ? ' (Vercel cron requires GET — ensure the write is idempotent)'
+      : isUnsub
+        ? ' (email one-click unsubscribe — but mail-client prefetch can auto-trigger it; prefer RFC 8058 List-Unsubscribe-Post or a confirm step)'
+        : ''
 
     // Next.js route handlers: export async function GET(...) {}
     for (const fn of file.getFunctions()) {
@@ -71,8 +80,8 @@ const sideEffectInGet: Check = {
             ctx,
             'side-effect-in-get',
             'correctness',
-            'error',
-            'GET route handler performs a write — link prefetch or email scanners can trigger it unintentionally',
+            sev,
+            `GET route handler performs a write — link prefetch or email scanners can trigger it unintentionally${note}`,
             'Move the side effect to POST, or add an idempotency guard.',
           ),
         )
@@ -95,8 +104,8 @@ const sideEffectInGet: Check = {
             ctx,
             'side-effect-in-get',
             'correctness',
-            'error',
-            "Payload endpoint with method:'get' performs a write",
+            sev,
+            `Payload endpoint with method:'get' performs a write${note}`,
             'Use method:\'post\' for mutating endpoints, or guard against repeated calls.',
           ),
         )
@@ -118,7 +127,7 @@ const leaksErrorMessage: Check = {
       const name = pa.getName().replace(/['"`]/g, '')
       if (name !== 'error' && name !== 'message') continue
       const initText = pa.getInitializer()?.getText() ?? ''
-      if (/\b\w*(err|error|e)\b\s*\.\s*(message|stack)\b/.test(initText)) {
+      if (/(^|[^\w.])(err|error|e|ex|exception)\s*\.\s*(message|stack)\b/.test(initText)) {
         findings.push(
           makeFinding(
             pa,

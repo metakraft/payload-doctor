@@ -1,9 +1,9 @@
 import type { Finding, Severity } from './types'
 
 const WEIGHT: Record<Severity, number> = {
-  error: 12,
-  warning: 4,
-  info: 1,
+  error: 10,
+  warning: 3,
+  info: 0,
 }
 
 export interface ScoreResult {

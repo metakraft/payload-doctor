@@ -44,3 +44,7 @@ context. The most important rule is `local-api-override-access`: Payload's Local
 API defaults to `overrideAccess: true`, which bypasses collection access control,
 so request-context calls must pass `overrideAccess: false` and `user` (or verify
 ownership manually).
+
+---
+
+By Leander M. von Kraft — www.metakraft.de · Tierramor Agency. MIT licensed, provided as-is without warranty.

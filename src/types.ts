@@ -1,7 +1,7 @@
 import type { SourceFile } from 'ts-morph'
 
 export type Severity = 'error' | 'warning' | 'info'
-export type Category = 'security' | 'privacy' | 'correctness' | 'config'
+export type Category = 'security' | 'privacy' | 'correctness' | 'config' | 'rendering'
 
 export interface Finding {
   ruleId: string
@@ -12,6 +12,8 @@ export interface Finding {
   line: number
   column: number
   hint?: string
+  /** Optional context-specific fix snippet (overrides the generic per-rule one). */
+  fix?: string
 }
 
 export interface CheckContext {

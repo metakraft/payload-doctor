@@ -1,21 +1,36 @@
 import { Node, SyntaxKind, type ObjectLiteralExpression } from 'ts-morph'
-import type { Check, Finding } from '../types'
+import type { Check, Finding, Severity } from '../types'
 import {
   isLocalApiCall,
   isCollectionConfig,
+  isAuthCollection,
   isSystemPath,
+  isServerJobPath,
   looksLikeRequestFile,
   getFieldObjects,
   propInit,
   propText,
   hasProp,
+  hasSpread,
+  hasSegment,
   returnsTrue,
   makeFinding,
   unquote,
   MUTATION_METHODS,
 } from '../util'
 
-const PRIVILEGED_FIELD = /^(roles?|isadmin|isstaff|ispremium|permissions?|capabilities|plan|tier)$/i
+const PRIVILEGED_WORDS = new Set([
+  'role',
+  'roles',
+  'admin',
+  'isadmin',
+  'staff',
+  'isstaff',
+  'permission',
+  'permissions',
+  'capability',
+  'capabilities',
+])
 
 /**
  * The headline rule: Payload's Local API defaults to overrideAccess: true,
@@ -33,12 +48,37 @@ const localApiOverride: Check = {
     for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const local = isLocalApiCall(call)
       if (!local) continue
+      // Can't see into a spread; assume it may carry overrideAccess:false.
+      if (hasSpread(local.arg)) continue
       const overrideText = propText(local.arg, 'overrideAccess')
       if (overrideText === 'false') continue // explicitly safe
       const isMutation = MUTATION_METHODS.has(local.method)
-      // Mutations are always serious; reads only flagged in request files.
-      if (!isMutation && !requestCtx) continue
-      const severity = isMutation ? 'error' : 'warning'
+      const hasUser = hasProp(local.arg, 'user')
+
+      if (overrideText === 'true') {
+        // overrideAccess:true + user is contradictory -> reported by override-access-true-with-user
+        if (hasUser) continue
+        // explicit system write with no user -> intentional; surface as info only
+        findings.push(
+          makeFinding(
+            call,
+            ctx,
+            'local-api-override-access',
+            'security',
+            'info',
+            `payload.${local.method}() uses explicit overrideAccess:true with no user (system write)`,
+            'Fine for cron/migrations/webhooks. If this ever runs for a user, pass overrideAccess:false and user.',
+          ),
+        )
+        continue
+      }
+
+      // overrideAccess not set -> defaults to true (the real footgun)
+      // In server/job context (cron, webhooks, sync, migrations) this is expected -> info.
+      // Otherwise mutations are serious; reads only flagged in request files.
+      const serverJob = isServerJobPath(file.getFilePath())
+      if (!isMutation && !requestCtx && !serverJob) continue
+      const severity: Severity = serverJob ? 'info' : isMutation ? 'error' : 'warning'
       findings.push(
         makeFinding(
           call,
@@ -47,7 +87,9 @@ const localApiOverride: Check = {
           'security',
           severity,
           `payload.${local.method}() runs with overrideAccess:true by default, bypassing collection access control`,
-          'Pass overrideAccess:false and user, or verify ownership manually (defense in depth).',
+          serverJob
+            ? 'System/job context — overrideAccess defaulting to true is expected here. Only pass overrideAccess:false + user if this can ever run on behalf of an end user.'
+            : 'Pass overrideAccess:false and user, or verify ownership manually (defense in depth).',
         ),
       )
     }
@@ -102,8 +144,9 @@ const collectionMissingAccess: Check = {
           'collection-missing-access',
           'security',
           'warning',
-          `Collection "${slug}" defines no access control — operations fall back to defaults`,
+          `"${slug}" has no explicit access control — operations fall back to framework defaults`,
           'Define access.read / create / update / delete explicitly (owner-or-admin where-constraint for user data).',
+          `// collection "${slug}": define access explicitly\naccess: {\n  read: ownerOrAdmin,\n  create: authenticated,\n  update: ownerOrAdmin,\n  delete: ({ req }) => isAdmin(req.user),\n}`,
         ),
       )
     }
@@ -123,22 +166,26 @@ const openAccessFunction: Check = {
       const accessInit = propInit(obj, 'access')
       if (!accessInit || !Node.isObjectLiteralExpression(accessInit)) continue
       const slug = unquote(propText(obj, 'slug')) ?? 'unknown'
+      const auth = isAuthCollection(obj)
       for (const op of ['create', 'update', 'delete', 'read'] as const) {
         const init = propInit(accessInit as ObjectLiteralExpression, op)
         if (!returnsTrue(init)) continue
         const isWrite = op !== 'read'
+        // public registration (create on an auth collection) is a normal pattern
+        const publicRegistration = op === 'create' && auth
+        const severity = !isWrite || publicRegistration ? 'info' : 'error'
+        const message = publicRegistration
+          ? `Auth collection "${slug}" allows public create (registration)`
+          : isWrite
+            ? `Collection "${slug}" has access.${op} returning true — anyone can write`
+            : `Collection "${slug}" has access.${op} returning true — fully public read`
+        const hint = publicRegistration
+          ? 'Confirm public registration is intended; otherwise restrict create.'
+          : isWrite
+            ? 'Restrict to owner-or-admin (return a where-constraint for non-admins).'
+            : 'Confirm this collection is intended to be public.'
         findings.push(
-          makeFinding(
-            init!,
-            ctx,
-            'open-access-function',
-            'security',
-            isWrite ? 'error' : 'info',
-            `Collection "${slug}" has access.${op} returning true — ${isWrite ? 'anyone can write' : 'fully public read'}`,
-            isWrite
-              ? 'Restrict to owner-or-admin (return a where-constraint for non-admins).'
-              : 'Confirm this collection is intended to be public.',
-          ),
+          makeFinding(init!, ctx, 'open-access-function', 'security', severity, message, hint),
         )
       }
     }
@@ -146,9 +193,43 @@ const openAccessFunction: Check = {
   },
 }
 
+type CreateAccess = 'public' | 'authenticated' | 'restricted' | 'unknown'
+
+/**
+ * Classify a collection's `access.create`. "owner" patterns (ownerOrAdmin) count
+ * as user-facing, not admin-restricted — only admin/role-gated or `false` create
+ * is "restricted" (the system controls creation).
+ */
+function classifyCreateAccess(obj: ObjectLiteralExpression): CreateAccess {
+  const access = propInit(obj, 'access')
+  if (!access || !Node.isObjectLiteralExpression(access)) return 'unknown'
+  const create = propInit(access, 'create')
+  if (!create) return 'unknown'
+  if (returnsTrue(create)) return 'public'
+  const text = create.getText().replace(/\s+/g, ' ')
+  const lc = text.toLowerCase()
+  const hasOwner = /owner|isowner|ownuser/.test(lc)
+  if (!hasOwner && /=>\s*false|return\s+false/.test(text)) return 'restricted'
+  if (!hasOwner && /(admin|\brole|staff|superuser|permission)/.test(lc)) return 'restricted'
+  if (hasOwner) return 'authenticated'
+  if (/authenticated/.test(lc) || /req\.user|\buser\b/.test(lc)) return 'authenticated'
+  return 'unknown'
+}
+
+/** Does the collection have a beforeChange/beforeValidate hook (may sanitize input)? */
+function hasMutatingHook(obj: ObjectLiteralExpression): boolean {
+  const hooksInit = propInit(obj, 'hooks')
+  return (
+    !!hooksInit &&
+    Node.isObjectLiteralExpression(hooksInit) &&
+    /beforeValidate|beforeChange/.test(hooksInit.getText())
+  )
+}
+
 /**
  * If a collection links to users and allows create, a client could supply an
- * arbitrary owner. Ownership must be forced in a beforeValidate hook.
+ * arbitrary owner. Ownership must be forced in a beforeValidate hook. If create
+ * is admin/system-restricted, the system controls the owner, so this is info.
  */
 const missingOwnerEnforcement: Check = {
   id: 'missing-owner-enforcement',
@@ -167,25 +248,27 @@ const missingOwnerEnforcement: Check = {
         return rel === 'users' || (name ? /^(user|owner|author|createdby)$/i.test(name) : false)
       })
       if (!ownerField) continue
-      // Look for any beforeValidate/beforeChange hook that assigns the owner.
-      const hooksInit = propInit(obj, 'hooks')
-      let enforced = false
-      if (hooksInit && Node.isObjectLiteralExpression(hooksInit)) {
-        const hooksText = hooksInit.getText()
-        if (/beforeValidate|beforeChange/.test(hooksText) && /\bdata\.(user|owner|author)\b/.test(hooksText)) {
-          enforced = true
-        }
-      }
+      // Suppress if ownership could plausibly be enforced:
+      //  - a beforeValidate/beforeChange hook exists (may live in an imported fn), or
+      //  - the owner field has a defaultValue (often req.user.id).
+      let enforced = hasMutatingHook(obj)
+      if (hasProp(ownerField, 'defaultValue')) enforced = true
       if (enforced) continue
+      // If creation is admin/system-restricted, the system stamps the owner -> info, not warning.
+      const restricted = classifyCreateAccess(obj) === 'restricted'
+      const ownerName = unquote(propText(ownerField, 'name')) ?? 'user'
       findings.push(
         makeFinding(
           ownerField,
           ctx,
           'missing-owner-enforcement',
           'security',
-          'warning',
-          `Collection "${slug}" links to a user but does not force ownership on create`,
+          restricted ? 'info' : 'warning',
+          restricted
+            ? `Collection "${slug}" links to a user; creation is admin/system-restricted, so the owner is system-set (verify it really is)`
+            : `Collection "${slug}" links to a user but does not force ownership on create`,
           'Add a beforeValidate hook that sets data.user = req.user.id on create; never trust a client-supplied owner.',
+          `// collection "${slug}": stamp the owner on create, ignore client input\nhooks: { beforeChange: [({ req, data, operation }) => {\n  if (operation === 'create' && req.user) data.${ownerName} = req.user.id\n  return data\n}] }`,
         ),
       )
     }
@@ -205,7 +288,7 @@ const userWritablePrivilegedField: Check = {
       const slug = unquote(propText(obj, 'slug')) ?? 'unknown'
       for (const f of getFieldObjects(obj)) {
         const name = unquote(propText(f, 'name'))
-        if (!name || !PRIVILEGED_FIELD.test(name)) continue
+        if (!name || !hasSegment(name, PRIVILEGED_WORDS)) continue
         const accessInit = propInit(f, 'access')
         const hasUpdateGate =
           accessInit &&
@@ -229,6 +312,57 @@ const userWritablePrivilegedField: Check = {
   },
 }
 
+/**
+ * Mass assignment / privilege escalation on create: an AUTH collection whose
+ * `create` access is open (public or any authenticated user) has a privileged
+ * field (roles/isAdmin/…) with no field-level `access.create` and no sanitizing
+ * hook — so a registrant could set `roles: ['admin']` in the create payload.
+ * Scoped to auth collections because a `roles` field on a content collection is
+ * not a privilege vector. Complements user-writable-privileged-field (update path).
+ */
+const massAssignment: Check = {
+  id: 'mass-assignment',
+  category: 'security',
+  describe: 'Privileged field settable on create (open create, no field access.create)',
+  run(file, ctx) {
+    const findings: Finding[] = []
+    for (const obj of file.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression)) {
+      if (!isCollectionConfig(obj)) continue
+      const slug = unquote(propText(obj, 'slug')) ?? 'unknown'
+      if (!isAuthCollection(obj) && slug !== 'users') continue
+      const createClass = classifyCreateAccess(obj)
+      if (createClass !== 'public' && createClass !== 'authenticated') continue
+      if (hasMutatingHook(obj)) continue // a beforeChange hook may strip the field on create
+      for (const f of getFieldObjects(obj)) {
+        const name = unquote(propText(f, 'name'))
+        if (!name || !hasSegment(name, PRIVILEGED_WORDS)) continue
+        const accessInit = propInit(f, 'access')
+        let createGated = false
+        if (accessInit && Node.isObjectLiteralExpression(accessInit)) {
+          const fCreate = propInit(accessInit, 'create')
+          if (fCreate && !returnsTrue(fCreate)) createGated = true
+        }
+        if (createGated) continue
+        const severity: Severity = createClass === 'public' ? 'error' : 'warning'
+        const who = createClass === 'public' ? 'Anyone (create is public)' : 'Any authenticated user'
+        findings.push(
+          makeFinding(
+            f,
+            ctx,
+            'mass-assignment',
+            'security',
+            severity,
+            `Privileged field "${name}" on "${slug}" can be set on create — ${who}, and it has no field-level access.create (mass-assignment privilege escalation)`,
+            'Add field access: { create: ({ req }) => isAdmin(req.user) } so only admins can set it, even on create. The defaultValue still applies for normal sign-ups.',
+            `// field "${name}" on "${slug}": add a field-level create gate\naccess: { create: ({ req }) => req.user?.roles?.includes('admin') ?? false }`,
+          ),
+        )
+      }
+    }
+    return findings
+  },
+}
+
 export const accessChecks: Check[] = [
   localApiOverride,
   overrideTrueWithUser,
@@ -236,4 +370,5 @@ export const accessChecks: Check[] = [
   openAccessFunction,
   missingOwnerEnforcement,
   userWritablePrivilegedField,
+  massAssignment,
 ]
