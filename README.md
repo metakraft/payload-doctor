@@ -83,7 +83,7 @@ number of suppressed findings is reported so suppressions stay visible.
 
 | Rule | Category | Severity | What it catches |
 |------|----------|----------|-----------------|
-| `local-api-override-access` | security | error / warning | Local API call without `overrideAccess: false` — access control bypassed |
+| `local-api-override-access` | security | error / warning | Local API call (route handler, server action or server component) without `overrideAccess: false` — access control bypassed |
 | `override-access-true-with-user` | security | error | `overrideAccess: true` while passing a `user` — control skipped on purpose |
 | `collection-missing-access` | security | warning | Collection with no explicit `access` block |
 | `open-access-function` | security | error / info | `access.{create,update,delete}` returns `true` (anyone can write) |

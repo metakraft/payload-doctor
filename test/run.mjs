@@ -37,6 +37,18 @@ const cases = [
     dir: 'system',
     check: (r) => r.counts.error === 0 && r.counts.info >= 1,
   },
+  {
+    name: 'render-context read is flagged AND names the collection + missing published filter',
+    dir: 'vulnerable',
+    check: (r) =>
+      r.findings.some(
+        (f) =>
+          f.ruleId === 'local-api-override-access' &&
+          /ArchiveBlock/.test(f.file) &&
+          /'posts'/.test(f.message) &&
+          /draft|published/i.test(f.message),
+      ),
+  },
 ]
 
 let failed = 0
