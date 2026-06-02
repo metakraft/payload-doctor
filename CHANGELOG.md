@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com).
 
+## 0.6.0
+
+### Added
+- `local-api-override-access` now treats any file calling `getPayload(` as a
+  request/render surface, catching async React Server Components that read via
+  the Local API without `overrideAccess: false` (drafts/unpublished content could
+  leak to anonymous visitors). Trusted system/job paths stay excluded or info-only.
+- Findings now name the targeted collection and state whether the read is already
+  constrained to published (`draft: false` / `_status` where-clause), with a
+  manual-review checklist — triage without opening the file.
+
+### Thanks
+- @PleasePrompto for the contribution.
+
 ## 0.5.4
 
 Minor polish from a second-pass review. No behaviour change on findings (fixtures still 0 FP).
