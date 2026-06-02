@@ -1,6 +1,6 @@
 {
   "name": "payload-doctor",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "description": "Static security & correctness linter for Payload CMS (the headless CMS) — audits collections, access control, hooks, routes and config. Not an API-payload validator.",
   "type": "commonjs",
   "bin": {
