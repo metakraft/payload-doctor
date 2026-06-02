@@ -272,5 +272,11 @@ export function looksLikeRequestFile(file: SourceFile): boolean {
   if (/\/api\//.test(p)) return true
   const text = file.getFullText()
   if (/['"]use server['"]/.test(text)) return true
+  // getPayload() is THE way to reach the Local API from OUTSIDE the Payload runtime:
+  // Next.js route handlers, server actions, and (async) React Server Components. Inside
+  // Payload (hooks/endpoints) you already have req.payload, so seeing getPayload marks a
+  // request/render surface. Trusted system/job paths (migrations, seeds, cron, worker, …)
+  // are excluded or downgraded to info separately by the caller.
+  if (/\bgetPayload\s*\(/.test(text)) return true
   return false
 }

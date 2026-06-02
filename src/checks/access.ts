@@ -32,6 +32,27 @@ const PRIVILEGED_WORDS = new Set([
   'capabilities',
 ])
 
+/** Name of the collection/global a Local API call targets, and whether it's a static literal. */
+function readCollectionLabel(arg: ObjectLiteralExpression): { name: string; dynamic: boolean } {
+  const prop = arg.getProperty('collection') ?? arg.getProperty('global')
+  if (prop && Node.isPropertyAssignment(prop)) {
+    const init = prop.getInitializer()
+    if (init && Node.isStringLiteral(init)) return { name: init.getLiteralValue(), dynamic: false }
+    if (init) return { name: init.getText(), dynamic: true }
+  }
+  // `{ collection }` shorthand -> surface the variable name so reviewers can trace it.
+  if (prop && Node.isShorthandPropertyAssignment(prop)) return { name: prop.getName(), dynamic: true }
+  return { name: 'unknown', dynamic: true }
+}
+
+/** Does a read already constrain to published (draft:false or a _status where-clause)? */
+function hasPublishedConstraint(arg: ObjectLiteralExpression): boolean {
+  const draftInit = propInit(arg, 'draft')
+  if (draftInit && draftInit.getKind() === SyntaxKind.FalseKeyword) return true
+  const whereInit = propInit(arg, 'where')
+  return !!whereInit && /_status/.test(whereInit.getText())
+}
+
 /**
  * The headline rule: Payload's Local API defaults to overrideAccess: true,
  * which BYPASSES collection access control. Any request-context call must set
@@ -54,6 +75,13 @@ const localApiOverride: Check = {
       if (overrideText === 'false') continue // explicitly safe
       const isMutation = MUTATION_METHODS.has(local.method)
       const hasUser = hasProp(local.arg, 'user')
+      // Context a reviewer (AI or human) needs to triage WITHOUT opening the file.
+      const { name: coll, dynamic } = readCollectionLabel(local.arg)
+      const collLabel = !dynamic
+        ? `'${coll}'`
+        : coll === 'unknown'
+          ? 'a dynamic collection'
+          : `a dynamic collection (${coll})`
 
       if (overrideText === 'true') {
         // overrideAccess:true + user is contradictory -> reported by override-access-true-with-user
@@ -66,7 +94,7 @@ const localApiOverride: Check = {
             'local-api-override-access',
             'security',
             'info',
-            `payload.${local.method}() uses explicit overrideAccess:true with no user (system write)`,
+            `payload.${local.method}() on ${collLabel} uses explicit overrideAccess:true with no user (system write)`,
             'Fine for cron/migrations/webhooks. If this ever runs for a user, pass overrideAccess:false and user.',
           ),
         )
@@ -79,6 +107,14 @@ const localApiOverride: Check = {
       const serverJob = isServerJobPath(file.getFilePath())
       if (!isMutation && !requestCtx && !serverJob) continue
       const severity: Severity = serverJob ? 'info' : isMutation ? 'error' : 'warning'
+      // For reads, the decisive triage question is "can drafts/unpublished leak?" —
+      // i.e. is the read already constrained to published? Surface that explicitly.
+      const constrained = !isMutation && hasPublishedConstraint(local.arg)
+      const leakNote = isMutation
+        ? ''
+        : constrained
+          ? ' — read is constrained to published, but other access rules are still skipped'
+          : ' — no published/draft filter, so drafts/unpublished can be returned'
       findings.push(
         makeFinding(
           call,
@@ -86,10 +122,12 @@ const localApiOverride: Check = {
           'local-api-override-access',
           'security',
           severity,
-          `payload.${local.method}() runs with overrideAccess:true by default, bypassing collection access control`,
+          `payload.${local.method}() on ${collLabel} runs with overrideAccess:true by default, bypassing collection access control${leakNote}`,
           serverJob
             ? 'System/job context — overrideAccess defaulting to true is expected here. Only pass overrideAccess:false + user if this can ever run on behalf of an end user.'
-            : 'Pass overrideAccess:false and user, or verify ownership manually (defense in depth).',
+            : isMutation
+              ? 'Pass overrideAccess:false and user, or verify ownership manually (defense in depth).'
+              : `Manual review: is ${collLabel} draft-enabled and rendered for anonymous visitors? If so, pass overrideAccess:false (+ user) to enforce published-only. If this is authenticated draft preview, pass user and suppress with a reason.`,
         ),
       )
     }
